@@ -82,6 +82,9 @@ pub struct Config {
 
     /// Background color as RGBA (default: white).
     pub background: [u8; 4],
+
+    /// Raw TrueType or OpenType font byte buffers to bundle natively into the engine.
+    pub fonts: Vec<Vec<u8>>,
 }
 
 impl Default for Config {
@@ -94,6 +97,7 @@ impl Default for Config {
             color_scheme: ColorScheme::Light,
             auto_height: false,
             background: [255, 255, 255, 255], // White
+            fonts: Vec::new(),
         }
     }
 }
@@ -246,6 +250,14 @@ impl Config {
     /// Shorthand for `.background([0, 0, 0, 0])`.
     pub fn transparent(self) -> Self {
         self.background([0, 0, 0, 0])
+    }
+
+    /// Add a bundled font from raw bytes to the rendering engine.
+    /// 
+    /// This allows resolving explicit fonts when rendering (e.g. Carlito for Calibri).
+    pub fn font(mut self, font_data: Vec<u8>) -> Self {
+        self.fonts.push(font_data);
+        self
     }
 
     /// Minimum supported width/height in pixels.

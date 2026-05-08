@@ -12,9 +12,15 @@ use blitz_html::HtmlDocument;
 #[cfg(feature = "png")]
 use blitz_paint::paint_scene;
 
+use std::sync::Mutex;
+use std::sync::LazyLock;
+
+static RENDER_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
 /// Render a Blitz document to PNG bytes.
 #[cfg(feature = "png")]
 pub fn render_to_png(document: &HtmlDocument, config: &Config) -> Result<Vec<u8>> {
+    let _lock = RENDER_MUTEX.lock().unwrap();
     let scale = config.scale as f64;
     let width = config.width;
     let height = if config.auto_height {

@@ -35,6 +35,8 @@ linebender_resource_handle = { version = "0.1", optional = true }  # For font da
 
 # Common dependencies
 thiserror = "2"
+base64 = "0.22.1"
+image = { version = "0.25.6", features = ["png"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

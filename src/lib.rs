@@ -105,7 +105,12 @@ pub fn render(html: &str, config: Config) -> Result<Vec<u8>> {
     config.validate()?;
 
     // Parse HTML and create document
-    let mut document = create_document(html, &config)?;
+    let (mut document, rx) = create_document(html, &config)?;
+
+    // Process all resources (like data:image URIs) that were fetched during parsing
+    while let Ok(resource) = rx.try_recv() {
+        document.load_resource(resource);
+    }
 
     // Resolve styles and compute layout
     document.resolve(0.0);
@@ -155,8 +160,57 @@ pub fn render_to_pdf(html: &str, config: Config) -> Result<Vec<u8>> {
     render(html, config.format(OutputFormat::Pdf))
 }
 
+use blitz_dom::net::Resource;
+use blitz_traits::net::{NetProvider, Request, BoxedHandler, Bytes};
+use std::sync::mpsc::{channel, Sender, Receiver};
+use std::sync::Arc;
+
+struct DataUrlNetProvider {
+    tx: Sender<Resource>,
+}
+
+impl NetProvider<Resource> for DataUrlNetProvider {
+    fn fetch(&self, doc_id: usize, request: Request, handler: BoxedHandler<Resource>) {
+        println!("FETCH CALLED: {}", request.url);
+        if request.url.scheme() == "data" {
+            let path = request.url.path();
+            if let Some(comma_idx) = path.find(',') {
+                let metadata = &path[..comma_idx];
+                let data_str = &path[comma_idx + 1..];
+                if metadata.contains(";base64") {
+                    use base64::{Engine as _, engine::general_purpose};
+                    match general_purpose::STANDARD.decode(data_str) {
+                        Ok(decoded) => {
+                            println!("SUCCESSFULLY DECODED BASE64 (len: {})", decoded.len());
+                            let tx = self.tx.clone();
+                            let callback = Arc::new(move |_doc_id: usize, result: std::result::Result<Resource, Option<String>>| {
+                                println!("CALLBACK CALLED WITH RESULT: {}", result.is_ok());
+                                if let Ok(res) = result {
+                                    let _ = tx.send(res);
+                                }
+                            });
+                            handler.bytes(doc_id, Bytes::from(decoded), callback);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to decode base64 data URI: {}", e);
+                            let tx = self.tx.clone();
+                            let callback = Arc::new(move |_doc_id: usize, result: std::result::Result<Resource, Option<String>>| {
+                                if let Ok(res) = result {
+                                    let _ = tx.send(res);
+                                }
+                            });
+                            // Provide an empty byte array to prevent hanging
+                            handler.bytes(doc_id, Bytes::from(vec![]), callback);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Create and configure a Blitz document from HTML.
-fn create_document(html: &str, config: &Config) -> Result<HtmlDocument> {
+fn create_document(html: &str, config: &Config) -> Result<(HtmlDocument, Receiver<Resource>)> {
     let viewport = Viewport::new(
         config.width,
         config.height,
@@ -164,12 +218,24 @@ fn create_document(html: &str, config: &Config) -> Result<HtmlDocument> {
         config.color_scheme.into(),
     );
 
-    let doc_config = DocumentConfig {
+    let (tx, rx) = channel();
+    let provider = Arc::new(DataUrlNetProvider { tx });
+
+    let mut doc_config = DocumentConfig {
         viewport: Some(viewport),
+        net_provider: Some(provider),
         ..Default::default()
     };
+    
+    if !config.fonts.is_empty() {
+        let mut font_ctx = parley::FontContext::default();
+        for font_data in &config.fonts {
+            font_ctx.collection.register_fonts(font_data.clone().into(), None);
+        }
+        doc_config.font_ctx = Some(font_ctx);
+    }
 
-    Ok(HtmlDocument::from_html(html, doc_config))
+    Ok((HtmlDocument::from_html(html, doc_config), rx))
 }
 
 #[cfg(test)]
@@ -228,5 +294,27 @@ mod tests {
             .height(Config::MIN_DIMENSION)
             .scale(0.1);
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_fonts() {
+        let config = Config::new().font(vec![0, 1, 2, 3]);
+        assert_eq!(config.fonts.len(), 1);
+        assert_eq!(config.fonts[0], vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn test_font_injection_render() {
+        let html = r#"<p style="font-family: CustomFont">Test</p>"#;
+        let config = Config::default().font(vec![0, 1, 2, 3]).width(100).height(100);
+        let result = render(html, config);
+        result.unwrap();
+    }
+
+    #[test]
+    fn test_data_uri_net_provider() {
+        let html = r#"<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=" />"#;
+        let result = render(html, Config::default().width(100).height(100));
+        result.unwrap();
     }
 }

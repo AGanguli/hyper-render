@@ -205,6 +205,14 @@ impl NetProvider<Resource> for DataUrlNetProvider {
                     }
                 }
             }
+        } else {
+            let tx = self.tx.clone();
+            let callback = Arc::new(move |_doc_id: usize, result: std::result::Result<Resource, Option<String>>| {
+                if let Ok(res) = result {
+                    let _ = tx.send(res);
+                }
+            });
+            handler.bytes(doc_id, Bytes::from(vec![]), callback);
         }
     }
 }
